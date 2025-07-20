@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern WebSDR Client</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1a202c; /* Equivalent to bg-gray-900 */
+            overflow: hidden; /* Prevent scrolling while dragging */
+        }
+        .font-orbitron {
+            font-family: 'Orbitron', sans-serif;
+        }
+        /* Waterfall container */
+        #waterfall-container {
+            position: relative;
+            cursor: grab;
+            overflow: hidden;
+            border-radius: 0.5rem;
+        }
+        #waterfall-container:active {
+            cursor: grabbing;
+        }
+        #waterfall-canvas, #ruler-canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        #ruler-canvas {
+            pointer-events: none; /* Allows clicks to pass through to the main canvas */
+        }
+        /* Waterfall overlays */
+        #center-line {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            width: 2px;
+            height: 100%;
+            background-color: rgba(255, 0, 0, 0.7);
+            pointer-events: none;
+            display: flex;
+            justify-content: center;
+        }
+        #center-freq-readout {
+            position: absolute;
+            top: 5px;
+            background-color: rgba(255, 0, 0, 0.8);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            transform: translateX(-50%);
+            left: 50%;
+            white-space: nowrap;
+        }
+        #bandwidth-indicator {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            height: 100%;
+            background-color: rgba(0, 150, 255, 0.15);
+            border-left: 1px solid rgba(0, 150, 255, 0.5);
+            border-right: 1px solid rgba(0, 150, 255, 0.5);
+            transform: translateX(-50%);
+            pointer-events: none;
+        }
+        /* Knob styles */
+        .knob {
+            border-radius: 50%;
+            background: radial-gradient(circle at 50% 50%, #4a5568, #1a202c);
+            box-shadow: 0 0 20px rgba(0,0,0,0.5), inset 0 2px 4px rgba(255,255,255,0.1), 0 5px 10px rgba(0,0,0,0.3);
+            cursor: grab;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .knob:active { cursor: grabbing; }
+        .knob-indicator {
+            position: absolute;
+            background-color: #2d3748;
+            border-radius: 50%;
+            box-shadow: inset 0 3px 5px rgba(0, 0, 0, 0.5);
+        }
+        .knob-step-btn {
+            @apply bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white rounded-md w-10 h-10 flex items-center justify-center transition-all shadow-md active:scale-95;
+        }
+        /* Custom button styles */
+        .control-btn {
+            @apply px-4 py-2 rounded-md text-sm font-semibold transition-all duration-150 ease-in-out shadow-md;
+        }
+        .control-btn.active {
+            @apply bg-sky-500 text-white shadow-lg ring-2 ring-sky-400;
+        }
+        .control-btn.inactive {
+            @apply bg-gray-700 text-gray-300 hover:bg-gray-600 active:scale-95;
+        }
+        .slider-thumb::-webkit-slider-thumb { @apply bg-sky-500; }
+        .slider-thumb::-moz-range-thumb { @apply bg-sky-500; }
+        
+        /* Band selector styles */
+        #band-selector .control-btn {
+            border-radius: 0;
+            border-right: 1px solid #2d3748;
+        }
+        #band-selector .control-btn:first-child {
+            border-top-left-radius: 0.5rem;
+            border-bottom-left-radius: 0.5rem;
+        }
+        #band-selector .control-btn:last-child {
+            border-top-right-radius: 0.5rem;
+            border-bottom-right-radius: 0.5rem;
+            border-right: 0;
+        }
+    </style>
+</head>
+<body class="text-gray-200 flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-7xl mx-auto bg-gray-800 shadow-2xl rounded-xl p-4 lg:p-6 space-y-4">
+
+        <!-- Header / Main Display -->
+        <header class="text-center">
+            <h1 class="text-xl lg:text-3xl font-bold text-white tracking-wider">WebSDR Interface</h1>
+            <p class="text-sm text-blue-400">LU4MH WEB-SDR</p>
+        </header>
+
+        <!-- Waterfall Controls -->
+        <div class="bg-gray-900 p-2 rounded-lg flex items-center justify-center space-x-4 text-xs">
+            <span class="font-bold text-gray-400">ZOOM:</span>
+            <button id="zoom-min" class="control-btn inactive px-2 py-1">MIN</button>
+            <button id="zoom-out" class="control-btn inactive px-2 py-1">&lt;</button>
+            <button id="zoom-in" class="control-btn inactive px-2 py-1">&gt;</button>
+            <button id="zoom-max" class="control-btn inactive px-2 py-1">MAX</button>
+            <div class="w-px h-6 bg-gray-700 mx-2"></div>
+            <label for="brightness-slider" class="font-bold text-gray-400">BRIGHT:</label>
+            <input id="brightness-slider" type="range" min="0" max="2" step="0.05" value="1" class="w-24 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer slider-thumb">
+            <div class="w-px h-6 bg-gray-700 mx-2"></div>
+            <label for="contrast-slider" class="font-bold text-gray-400">CONT:</label>
+            <input id="contrast-slider" type="range" min="0.5" max="3" step="0.05" value="1" class="w-24 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer slider-thumb">
+        </div>
+
+        <!-- Waterfall Display -->
+        <div id="waterfall-container" class="bg-black p-2 rounded-lg relative" style="height: 300px;">
+            <canvas id="waterfall-canvas"></canvas>
+            <canvas id="ruler-canvas"></canvas>
+            <div id="center-line">
+                <div id="center-freq-readout">7101.51 kHz</div>
+            </div>
+            <div id="bandwidth-indicator" style="width: 10%;"></div>
+        </div>
+        
+        <!-- Band Selector -->
+        <div id="band-selector" class="bg-gray-900 p-2 rounded-lg flex items-center justify-center">
+             <button class="control-btn inactive" data-band="80m">80m</button>
+             <button class="control-btn inactive" data-band="60m">60m</button>
+             <button class="control-btn active" data-band="40m">40m</button>
+             <button class="control-btn inactive" data-band="20m">20m</button>
+             <button class="control-btn inactive" data-band="10m">10m</button>
+        </div>
+
+        <!-- Main Control Surface -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+            <!-- Left Panel: VFO and Tuning -->
+            <div class="bg-gray-900 p-4 rounded-lg flex flex-col items-center justify-center space-y-4">
+                <div class="text-center">
+                    <label class="text-sm text-gray-400">VFO Frequency</label>
+                    <div id="vfo-display" class="font-orbitron text-5xl text-cyan-400 tracking-widest bg-black rounded-lg px-4 py-2 shadow-inner">
+                        7101.51
+                    </div>
+                    <span class="text-2xl text-cyan-300 font-orbitron">kHz</span>
+                </div>
+                <div class="flex items-center justify-center space-x-2">
+                    <button id="vfo-step-down" class="knob-step-btn">&lt;</button>
+                    <div id="vfo-knob-container" class="knob" style="width: 180px; height: 180px;">
+                        <div id="vfo-knob-indicator" class="knob-indicator" style="width: 30px; height: 30px; top: 25px; left: calc(50% - 15px);"></div>
+                    </div>
+                    <button id="vfo-step-up" class="knob-step-btn">&gt;</button>
+                </div>
+            </div>
+
+            <!-- Center Panel: Meters and Volume -->
+            <div class="bg-gray-900 p-4 rounded-lg flex flex-col justify-between">
+                <div>
+                    <label class="text-sm text-gray-400">S-Meter</label>
+                    <div class="w-full bg-black rounded-lg p-2 shadow-inner">
+                        <div class="relative h-6 bg-gradient-to-r from-blue-500 via-green-500 to-red-500 rounded">
+                            <div id="s-meter-needle" class="absolute top-0 bottom-0 w-1 bg-white rounded shadow-lg" style="left: 30%;"></div>
+                        </div>
+                    </div>
+                    <div class="flex justify-between text-xs text-gray-500 mt-1">
+                        <span>S1</span><span>S3</span><span>S5</span><span>S7</span><span>S9</span><span>+20</span><span>+40</span><span>+60</span>
+                    </div>
+                </div>
+                <div class="space-y-2">
+                    <div class="flex justify-between items-baseline">
+                        <label for="volume-slider" class="text-sm text-gray-400">Volume</label>
+                        <span id="volume-value" class="text-sm font-semibold text-white">75%</span>
+                    </div>
+                    <input id="volume-slider" type="range" min="0" max="100" value="75" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer slider-thumb">
+                </div>
+                 <div class="space-y-2">
+                    <label class="text-sm text-gray-400">Audio Recording</label>
+                    <button class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center space-x-2">
+                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6"/></svg>
+                        <span>Start Recording</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Right Panel: Mode and Filter -->
+            <div class="bg-gray-900 p-4 rounded-lg space-y-6 flex flex-col">
+                <div>
+                    <label class="text-sm text-gray-400 mb-2 block">Mode</label>
+                    <div id="mode-controls" class="grid grid-cols-3 gap-2">
+                        <button class="control-btn inactive" data-mode="LSB">LSB</button>
+                        <button class="control-btn active" data-mode="USB">USB</button>
+                        <button class="control-btn inactive" data-mode="AM">AM</button>
+                        <button class="control-btn inactive" data-mode="CW">CW</button>
+                        <button class="control-btn inactive" data-mode="FM">FM</button>
+                    </div>
+                </div>
+                <div class="flex-grow flex flex-col items-center justify-center">
+                    <label class="text-sm text-gray-400 mb-2 block">Filter Bandwidth</label>
+                     <div class="text-center text-xl font-semibold text-white mb-2" id="bandwidth-display">2.7 kHz</div>
+                    <div class="flex items-center justify-center space-x-2">
+                        <button id="bw-step-down" class="knob-step-btn w-8 h-8">&lt;</button>
+                        <div id="bw-knob-container" class="knob" style="width: 80px; height: 80px;">
+                             <div id="bw-knob-indicator" class="knob-indicator" style="width: 15px; height: 15px; top: 10px; left: calc(50% - 7.5px);"></div>
+                        </div>
+                        <button id="bw-step-up" class="knob-step-btn w-8 h-8">&gt;</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // --- DOM Elements ---
+        const vfoDisplay = document.getElementById('vfo-display');
+        const centerFreqReadout = document.getElementById('center-freq-readout');
+        const waterfallContainer = document.getElementById('waterfall-container');
+        const canvas = document.getElementById('waterfall-canvas');
+        const rulerCanvas = document.getElementById('ruler-canvas');
+        const bandwidthIndicator = document.getElementById('bandwidth-indicator');
+        const bandwidthDisplay = document.getElementById('bandwidth-display');
+
+        // --- State Variables ---
+        let currentFrequency = 7101.51;
+        let currentBandwidth = 2.7; // in kHz
+        let span = 50; // kHz span for the waterfall
+        let brightness = 1.0;
+        let contrast = 1.0;
+        
+        // --- Generic Knob Logic ---
+        function initializeKnob(knobElem, onRotate, onStep, stepValue) {
+            let isDragging = false;
+            let startAngle = 0;
+            let rotation = 0;
+
+            const handleInteraction = (e) => {
+                e.preventDefault();
+                if (!isDragging) return;
+
+                const rect = knobElem.getBoundingClientRect();
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                const clientX = e.clientX || e.touches[0].clientX;
+                const clientY = e.clientY || e.touches[0].clientY;
+
+                const angle = Math.atan2(clientY - centerY, clientX - centerX) * (180 / Math.PI);
+                let rotationDiff = angle - startAngle;
+
+                if (rotationDiff > 180) rotationDiff -= 360;
+                if (rotationDiff < -180) rotationDiff += 360;
+
+                rotation += rotationDiff;
+                knobElem.style.transform = `rotate(${rotation}deg)`;
+                onRotate(rotationDiff);
+                startAngle = angle;
+            };
+
+            const startDrag = (e) => {
+                // Ignore if the click is on a step button
+                if (e.target.classList.contains('knob-step-btn')) return;
+                isDragging = true;
+                knobElem.style.cursor = 'grabbing';
+                const rect = knobElem.getBoundingClientRect();
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                const clientX = e.clientX || e.touches[0].clientX;
+                const clientY = e.clientY || e.touches[0].clientY;
+                startAngle = Math.atan2(clientY - centerY, clientX - centerX) * (180 / Math.PI);
+                document.addEventListener('mousemove', handleInteraction);
+                document.addEventListener('touchmove', handleInteraction);
+            };
+
+            const stopDrag = () => {
+                if (isDragging) {
+                    isDragging = false;
+                    knobElem.style.cursor = 'grab';
+                    document.removeEventListener('mousemove', handleInteraction);
+                    document.removeEventListener('touchmove', handleInteraction);
+                }
+            };
+            
+            knobElem.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const direction = e.deltaY < 0 ? 1 : -1;
+                onStep(direction * stepValue);
+            });
+
+            knobElem.addEventListener('mousedown', startDrag);
+            knobElem.addEventListener('touchstart', startDrag);
+            document.addEventListener('mouseup', stopDrag);
+            document.addEventListener('touchend', stopDrag);
+        }
+
+        // --- VFO Knob ---
+        initializeKnob(
+            document.getElementById('vfo-knob-container'), 
+            (rotationDiff) => {
+                const freqChange = rotationDiff * 0.05; // Sensitivity for dragging
+                updateFrequency(currentFrequency + freqChange);
+            },
+            (change) => updateFrequency(currentFrequency + change),
+            0.01 // Step value for wheel/buttons
+        );
+        document.getElementById('vfo-step-up').addEventListener('click', () => updateFrequency(currentFrequency + 0.01));
+        document.getElementById('vfo-step-down').addEventListener('click', () => updateFrequency(currentFrequency - 0.01));
+
+
+        // --- Bandwidth Knob ---
+        initializeKnob(
+            document.getElementById('bw-knob-container'),
+            (rotationDiff) => {
+                const bwChange = rotationDiff * 0.02; // Sensitivity for dragging
+                updateBandwidth(bwChange);
+            },
+            (change) => updateBandwidth(change),
+            0.1 // Step value for wheel/buttons
+        );
+        document.getElementById('bw-step-up').addEventListener('click', () => updateBandwidth(0.1));
+        document.getElementById('bw-step-down').addEventListener('click', () => updateBandwidth(-0.1));
+
+        
+        // --- Frequency Logic ---
+        const updateFrequency = (newFreq) => {
+            currentFrequency = newFreq;
+            const freqString = currentFrequency.toFixed(2);
+            vfoDisplay.textContent = freqString;
+            centerFreqReadout.textContent = `${freqString} kHz`;
+            drawRuler();
+        };
+
+        // --- Waterfall Dragging Logic ---
+        let isWaterfallDragging = false;
+        let waterfallStartX = 0;
+        waterfallContainer.addEventListener('mousedown', (e) => {
+            if (e.target.tagName === 'BUTTON') return;
+            isWaterfallDragging = true;
+            waterfallContainer.style.cursor = 'grabbing';
+            waterfallStartX = e.clientX;
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isWaterfallDragging) return;
+            const dx = e.clientX - waterfallStartX;
+            const freqChange = -(dx / canvas.clientWidth) * span;
+            updateFrequency(currentFrequency + freqChange);
+            waterfallStartX = e.clientX;
+        });
+        document.addEventListener('mouseup', () => {
+            if (isWaterfallDragging) {
+                isWaterfallDragging = false;
+                waterfallContainer.style.cursor = 'grab';
+            }
+        });
+
+        // --- Control Listeners ---
+        document.getElementById('mode-controls').addEventListener('click', (e) => {
+            if (e.target.tagName === 'BUTTON' && e.target.classList.contains('control-btn')) {
+                e.currentTarget.querySelectorAll('.control-btn').forEach(btn => btn.classList.replace('active', 'inactive'));
+                e.target.classList.replace('inactive', 'active');
+            }
+        });
+
+        document.getElementById('band-selector').addEventListener('click', (e) => {
+            if (e.target.tagName === 'BUTTON' && e.target.classList.contains('control-btn')) {
+                e.currentTarget.querySelectorAll('.control-btn').forEach(btn => btn.classList.replace('active', 'inactive'));
+                e.target.classList.replace('inactive', 'active');
+                const band = e.target.dataset.band;
+                const bandFrequencies = {
+                    '80m': 3750.00,
+                    '60m': 5357.00,
+                    '40m': 7100.00,
+                    '20m': 14200.00,
+                    '10m': 28400.00
+                };
+                updateFrequency(bandFrequencies[band] || currentFrequency);
+            }
+        });
+
+        const updateBandwidth = (change) => {
+            currentBandwidth += change;
+            if (currentBandwidth < 0.5) currentBandwidth = 0.5;
+            if (currentBandwidth > 10) currentBandwidth = 10;
+            bandwidthDisplay.textContent = `${currentBandwidth.toFixed(1)} kHz`;
+            const widthPercentage = (currentBandwidth / span) * 100;
+            bandwidthIndicator.style.width = `${widthPercentage}%`;
+        };
+
+        document.getElementById('volume-slider').addEventListener('input', (e) => {
+            document.getElementById('volume-value').textContent = `${e.target.value}%`;
+        });
+
+        // --- Waterfall Control Listeners ---
+        const updateSpan = (newSpan) => {
+            span = Math.max(5, Math.min(200, newSpan)); // Clamp span between 5 and 200 kHz
+            updateBandwidth(0); // Recalculate indicator width
+            drawRuler();
+        };
+        document.getElementById('zoom-in').addEventListener('click', () => updateSpan(span / 1.5));
+        document.getElementById('zoom-out').addEventListener('click', () => updateSpan(span * 1.5));
+        document.getElementById('zoom-min').addEventListener('click', () => updateSpan(5));
+        document.getElementById('zoom-max').addEventListener('click', () => updateSpan(200));
+
+        document.getElementById('brightness-slider').addEventListener('input', (e) => brightness = parseFloat(e.target.value));
+        document.getElementById('contrast-slider').addEventListener('input', (e) => contrast = parseFloat(e.target.value));
+
+        // --- Drawing Logic ---
+        const waterfallCtx = canvas.getContext('2d');
+        const rulerCtx = rulerCanvas.getContext('2d');
+
+        function resizeCanvas() {
+            const container = document.getElementById('waterfall-container');
+            const dpr = window.devicePixelRatio || 1;
+            const rect = container.getBoundingClientRect();
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            rulerCanvas.width = rect.width * dpr;
+            rulerCanvas.height = rect.height * dpr;
+            // The scaling is now handled by using canvas.width/height vs clientWidth/clientHeight
+            drawRuler();
+        }
+
+        function drawRuler() {
+            const width = rulerCanvas.clientWidth;
+            const height = rulerCanvas.clientHeight;
+            rulerCtx.clearRect(0, 0, width, height);
+            rulerCtx.font = '12px Inter';
+            rulerCtx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            rulerCtx.textAlign = 'center';
+
+            const startFreq = currentFrequency - span / 2;
+            const endFreq = currentFrequency + span / 2;
+            let majorTickInterval = 10;
+            if (span <= 20) majorTickInterval = 5;
+            if (span <= 5) majorTickInterval = 1;
+            const firstMajorTick = Math.ceil(startFreq / majorTickInterval) * majorTickInterval;
+
+            for (let f = firstMajorTick; f <= endFreq; f += majorTickInterval) {
+                const x = ((f - startFreq) / span) * width;
+                if (x > 0 && x < width) {
+                    rulerCtx.fillRect(x - 0.5, height - 20, 1, 10);
+                    rulerCtx.fillText(f.toFixed(0), x, height - 5);
+                }
+            }
+        }
+
+        let signals = Array(1024).fill(0).map(() => ({ active: Math.random() > 0.98, strength: Math.random() * 150 + 50, decay: Math.random() * 0.05 + 0.95 }));
+        
+        function drawPlaceholderWaterfall() {
+            // FIX: Add guard to prevent drawing on a zero-sized canvas
+            if (canvas.width === 0 || canvas.height === 0) {
+                requestAnimationFrame(drawPlaceholderWaterfall);
+                return;
+            }
+
+            const width = canvas.width;
+            const height = canvas.height;
+            
+            waterfallCtx.drawImage(canvas, 0, 0, width, height, 0, 1, width, height);
+
+            const imageData = waterfallCtx.createImageData(width, 1);
+            const data = imageData.data;
+
+            for (let x = 0; x < width; x++) {
+                const signalIndex = Math.floor(x * (signals.length / width));
+                
+                let intensity = (Math.random() * 15 + 10); 
+                if (Math.random() > 0.6) intensity += Math.random() * 10;
+
+                if (signals[signalIndex].active) {
+                    intensity += signals[signalIndex].strength;
+                    signals[signalIndex].strength *= signals[signalIndex].decay;
+                    if (signals[signalIndex].strength < 1) signals[signalIndex].active = false;
+                } else if (Math.random() > 0.999) {
+                    signals[signalIndex] = { active: true, strength: Math.random() * 100 + 100, decay: Math.random() * 0.05 + 0.95 };
+                }
+                
+                let adjustedIntensity = ((intensity - 128) * contrast + 128) * brightness;
+                const finalIntensity = Math.max(0, Math.min(adjustedIntensity, 255));
+                
+                const index = x * 4;
+                
+                const r = finalIntensity * 0.8 + 40;
+                const g = finalIntensity * 0.7;
+                const b = finalIntensity * 1.2 + 60;
+                
+                data[index]     = r;
+                data[index + 1] = g;
+                data[index + 2] = b;
+                data[index + 3] = 255;
+            }
+            waterfallCtx.putImageData(imageData, 0, 0);
+            
+            requestAnimationFrame(drawPlaceholderWaterfall);
+        }
+        
+        // --- Initial Setup ---
+        // FIX: Wait for the DOM to be fully loaded before running setup
+        window.addEventListener('DOMContentLoaded', () => {
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+            drawPlaceholderWaterfall();
+        });
+    </script>
+</body>
+</html>
